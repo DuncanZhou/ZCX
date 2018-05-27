@@ -11,6 +11,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn import preprocessing
 from sklearn.cross_validation import train_test_split
 import xgboost as xgb
+import lightgbm as lgb
 
 train_consumer_A = pd.read_csv("./train/scene_A/train_consumer_A.csv")
 train_behavior_A = pd.read_csv('./train/scene_A/train_behavior_A.csv')
@@ -55,7 +56,7 @@ def RemoveTwoVals(X):
         if len(X[col].unique()) == 2:
             if np.nan in set(X[col].unique()):
                 to_remove.append(col)
-    print("containing %d columns" % len(to_remove))
+    print("remove %d columns" % len(to_remove))
     X = X.drop(to_remove,axis=1)
     return X
 
@@ -187,15 +188,14 @@ def Metric(reg,X,Y,n):
     # pred = reg.predict_proba(PreProcess(test_x))[:,1]
     # return roc_auc_score(test_y,pred)
 
-
     # cross validation
     kf = KFold(n_splits=n)
     kf.get_n_splits(X)
     for train_index, test_index in kf.split(X):
         X_train,X_test = X.iloc[train_index], X.iloc[test_index]
         Y_train,Y_test = Y.iloc[train_index], Y.iloc[test_index]
-        reg = Train(reg,X_train,Y_train)
-        pred = reg.predict_proba(PreProcess(X_test))[:,1]
+        regeression = Train(reg,X_train,Y_train)
+        pred = regeression.predict_proba(PreProcess(X_test))[:,1]
         print(pred)
         auc += roc_auc_score(Y_test,pred)
     # compute average auc
@@ -226,19 +226,30 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     reg = LogisticRegression(max_iter=1000)
     # read behaivor
     basic_info = GetBehavior(train_behavior_A)
-    print(basic_info.shape)
     # # read consuming
-    consuming_info = GetConsuming(train_consumer_A)
+    # consuming_info = GetConsuming(train_consumer_A)
 
     # # info = basic_info
-    info = pd.merge(basic_info,consuming_info,how='left')
-    # # read query
-    uids = basic_info['ccx_id'].unique()
-    query_info = GetQueryFeatures(train_ccx_A,uids)
-    info = pd.merge(info,query_info,how='left')
-    features = [col for col in info.columns if col != 'ccx_id']
-    res = Metric(reg,info[features],Y['target'],5)
-    # res = MetricOnXgboost(info[features],Y['target'],5)
+    # info = pd.merge(basic_info,consuming_info,how='left')
+    # # # read query
+    # uids = basic_info['ccx_id'].unique()
+    # query_info = GetQueryFeatures(train_ccx_A,uids)
+    # info = pd.merge(info,query_info,how='left')
+    info = basic_info
+    info = pd.merge(info,Y,how="outer")
+    label = info['target']
+    features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
+
+
+    # lightgbm
+    # split train_data and test_data
+
+    # param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
+    # train_data = lgb.Dataset(PreProcess(info[features]),label=label)
+    # print(lgb.cv(param, train_data, 10, nfold=5))
+
+    res = Metric(reg,info[features],label,5)
+    # res = MetricOnXgboost(info[features],label,5)
     print(res)
 
 # Genrate Results
