@@ -10,7 +10,8 @@ from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import LabelEncoder
 from sklearn import preprocessing
 from sklearn.cross_validation import train_test_split
-import xgboost as xgb
+from sklearn.ensemble import GradientBoostingRegressor
+# import xgboost as xgb
 import lightgbm as lgb
 
 train_consumer_A = pd.read_csv("./train/scene_A/train_consumer_A.csv")
@@ -38,12 +39,12 @@ def RemoveUnique(X):
     print ("remove %d columns" % len(to_remove))
     return X
 
-def RemoveNAN(X):
+def RemoveNAN(X,threshold):
     to_remove = []
     total = len(X)
     for col in X.columns:
         # remove columns which has more than 90% nan
-        if X[col].count() * 1.0 / total < 0.1:
+        if X[col].count() * 1.0 / total < threshold:
             to_remove.append(col)
     X = X.drop(to_remove,axis=1)
     print ("remove %d columns" % len(to_remove))
@@ -70,7 +71,7 @@ def RemoveYearColumns(basic_info):
 # process behaivor
 def GetBehavior(basic_info):
     basic_info = RemoveUnique(basic_info)
-    basic_info = RemoveNAN(basic_info)
+    basic_info = RemoveNAN(basic_info,0.2)
     basic_info = RemoveTwoVals(basic_info)
     basic_info = RemoveYearColumns(basic_info)
     return basic_info
@@ -97,6 +98,18 @@ def GenerateCostFeatures(consuming):
     cost.rename(columns={'V_1':'cost_times'},inplace=True)
     return cost
 
+# get each user cost each times(the same date)
+def GetEachUserCostEachDate(consuming):
+    consuming['cost'] = consuming['V_12'] * consuming['V_13']
+    temp = consuming.groupby(['ccx_id','V_7'])['cost'].sum().reset_index()
+    total_cost = temp.groupby('ccx_id')['cost'].sum().reset_index()
+    times = temp.groupby('ccx_id')['cost'].count().reset_index()
+    times = times.rename(columns={'cost':'times'})
+    cost_each_time = pd.DataFrame(columns=['ccx_id','cost_each_time'])
+    cost_each_time['ccx_id'] = total_cost['ccx_id'].unique()
+    cost_each_time['cost_each_time'] = total_cost['cost'] / times['times']
+    return cost_each_time
+
 # calc the times of each value(V_1,V_2,V_8,V_14)
 def GenerateCategoricalFeatures(consuming):
     res = pd.DataFrame(columns=['ccx_id'])
@@ -114,12 +127,28 @@ def GenerateCategoricalFeatures(consuming):
         res = pd.merge(res,temp,on='ccx_id',how='left').fillna(0)
     return res
 
+# remove 0 columns from consuming
+def RemoveZero(X,threshold):
+    to_remove = []
+    total = len(X)
+    for col in X.columns:
+        # remove columns which has more than 90% nan
+        if len(X[X[col] != 0]) * 1.0 / total < threshold:
+            to_remove.append(col)
+    X = X.drop(to_remove,axis=1)
+    print("remove %d columns" % len(to_remove))
+    return X
+
 # process consuming
 def GetConsuming(consuming_info):
     consuming_info = DeleteComplicate(consuming_info)
     cost = GenerateCostFeatures(consuming_info)
+    # merge each user cost each date
+    cost_each_date = GetEachUserCostEachDate(consuming_info)
     res = pd.DataFrame(GenerateCategoricalFeatures(consuming_info))
     consuming_info = pd.merge(cost,res)
+    consuming_info = pd.merge(consuming_info,cost_each_date,how='left')
+    consuming_info = RemoveZero(consuming_info,0.2)
     return consuming_info
 
 # process query
@@ -139,10 +168,18 @@ def GetQueryFeatures(query_info,uids):
     temp = query_info.groupby('ccx_id')['count'].sum().reset_index()
     temp.rename(columns={'count':'query_times'},inplace=True)
     res = pd.merge(res,temp,how='left').fillna(0)
+    # remove 0 columns from query
+    # res = RemoveZero(res,0.01)
     return res
 
 # process data
-def PreProcess(X):
+def PreProcess(X,flag=True):
+    '''
+
+    :param X:
+    :param flag: normalize data (true or flase)
+    :return:
+    '''
     le = LabelEncoder()
     # convert 'object'
     object_cols = X.columns[X.dtypes == object]
@@ -159,9 +196,10 @@ def PreProcess(X):
     # fill nan
     X = X.fillna(-1)
 
-    # standardlization
-    min_max_scaler = preprocessing.MinMaxScaler()
-    X = min_max_scaler.fit_transform(X)
+    if flag:
+        # standardlization
+        min_max_scaler = preprocessing.MinMaxScaler()
+        X = min_max_scaler.fit_transform(X)
     return X
 
 def Train(regression,X,Y):
@@ -194,14 +232,18 @@ def Metric(reg,X,Y,n):
     for train_index, test_index in kf.split(X):
         X_train,X_test = X.iloc[train_index], X.iloc[test_index]
         Y_train,Y_test = Y.iloc[train_index], Y.iloc[test_index]
-        regeression = Train(reg,X_train,Y_train)
-        pred = regeression.predict_proba(PreProcess(X_test))[:,1]
-        print(pred)
+        # logitics regression
+        # regeression = Train(reg,X_train,Y_train)
+        # pred = regeression.predict_proba(PreProcess(X_test))[:,1]
+        # gbdt
+        est = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, random_state=0, loss='ls').fit(PreProcess(X_train,False), Y_train)
+        pred = est.predict(PreProcess(X_test,False))
+        # print(pred)
         auc += roc_auc_score(Y_test,pred)
     # compute average auc
     return auc / n
 
-
+'''
 # metric on xgboost
 def MetricOnXgboost(X,Y,n):
     auc = 0
@@ -220,22 +262,21 @@ def MetricOnXgboost(X,Y,n):
         auc += roc_auc_score(Y_test,pred)
     # compute average auc
     return auc / n
+'''
 
 # Run
 def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B):
     reg = LogisticRegression(max_iter=1000)
     # read behaivor
     basic_info = GetBehavior(train_behavior_A)
-    # # read consuming
-    # consuming_info = GetConsuming(train_consumer_A)
-
-    # # info = basic_info
-    # info = pd.merge(basic_info,consuming_info,how='left')
-    # # # read query
-    # uids = basic_info['ccx_id'].unique()
-    # query_info = GetQueryFeatures(train_ccx_A,uids)
-    # info = pd.merge(info,query_info,how='left')
-    info = basic_info
+    # read consuming
+    consuming_info = GetConsuming(train_consumer_A)
+    info = pd.merge(basic_info,consuming_info,how='left')
+    # # read query
+    uids = basic_info['ccx_id'].unique()
+    query_info = GetQueryFeatures(train_ccx_A,uids)
+    info = pd.merge(info,query_info,how='left')
+    # info = basic_info
     info = pd.merge(info,Y,how="outer")
     label = info['target']
     features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
@@ -245,8 +286,8 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     # split train_data and test_data
 
     # param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
-    # train_data = lgb.Dataset(PreProcess(info[features]),label=label)
-    # print(lgb.cv(param, train_data, 10, nfold=5))
+    # train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
+    # print(np.mean((lgb.cv(param, train_data, 10, nfold=5))['auc-mean']))
 
     res = Metric(reg,info[features],label,5)
     # res = MetricOnXgboost(info[features],label,5)
@@ -264,22 +305,37 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     query_info = GetQueryFeatures(train_ccx_A,uids)
     info = pd.merge(basic_info,consuming_info,how='left')
     info = pd.merge(info,query_info,how='left')
-    features = [col for col in info.columns if col != 'ccx_id']
-    reg = Train(reg,info[features],Y['target'])
+    info = pd.merge(info,Y,how="outer")
+    label = info['target']
+    features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
+    reg = Train(reg,info[features],label)
 
-    test_basic_info = GetBehavior(test_behavior_A)
-    uids = test_basic_info['ccx_id'].unique()
-    test_consuming_info = GetConsuming(test_consumer_A)
-    test_query_info = GetQueryFeatures(train_ccx_A,uids)
-    test_info = pd.merge(test_basic_info,test_consuming_info)
-    test_info = pd.merge(test_info,test_query_info,how='left')
+    test_basic_info_A = GetBehavior(test_behavior_A)
+    uids = test_basic_info_A['ccx_id'].unique()
+    test_consuming_info_A = GetConsuming(test_consumer_A)
+    test_query_info_A = GetQueryFeatures(train_ccx_A,uids)
+    test_info_A = pd.merge(test_basic_info_A,test_consuming_info_A)
+    test_info_A = pd.merge(test_info_A,test_query_info_A,how='left')
     # fill features
-    lost_features = set(features) - set(test_info.columns)
+    lost_features = set(features) - set(test_info_A.columns)
     for col in lost_features:
-        test_info[col] = 0
-    predict_result_A = pd.DataFrame(reg.predict_proba(PreProcess(test_info[features]))[:,1])
+        test_info_A[col] = 0
+    predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
+    predict_result_A['ccx_id'] = test_basic_info_A['ccx_id'].unique()
+    predict_result_A['prob'] = reg.predict_proba(PreProcess(test_info_A[features]))[:,1]
     predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
-    predict_result_A.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
+    # predict_result_B using test_A
+    test_basic_info_B = GetBehavior(test_behavior_B)
+    test_consuming_info_B = GetConsuming(test_consumer_B)
+    test_info_B = pd.merge(test_basic_info_B,test_consuming_info_B)
+    # fill features
+    lost_features = set(features) - set(test_info_B.columns)
+    for col in lost_features:
+        test_info_B[col] = 0
+    predict_result_B = pd.DataFrame(columns=['ccx_id','prob'])
+    predict_result_B['ccx_id'] = test_basic_info_B['ccx_id'].unique()
+    predict_result_B['prob'] = reg.predict_proba(PreProcess(test_info_B[features]))[:,1]
+    predict_result_B.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
     # pred_A = reg.predict()
 Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
 # Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
