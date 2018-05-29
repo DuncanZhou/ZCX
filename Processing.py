@@ -11,6 +11,7 @@ from sklearn.preprocessing import LabelEncoder
 from sklearn import preprocessing
 from sklearn.cross_validation import train_test_split
 from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.preprocessing import OneHotEncoder
 # import xgboost as xgb
 import lightgbm as lgb
 
@@ -36,7 +37,7 @@ def RemoveUnique(X):
         if len(X[col].unique()) == 1:
             to_remove.append(col)
     X = X.drop(to_remove,axis=1)
-    print ("remove %d columns" % len(to_remove))
+    # print ("remove %d columns" % len(to_remove))
     return X
 
 def RemoveNAN(X,threshold):
@@ -47,7 +48,7 @@ def RemoveNAN(X,threshold):
         if X[col].count() * 1.0 / total < threshold:
             to_remove.append(col)
     X = X.drop(to_remove,axis=1)
-    print ("remove %d columns" % len(to_remove))
+    # print ("remove %d columns" % len(to_remove))
     return X
 
 # remove only two vals(NAN & other val)
@@ -57,14 +58,14 @@ def RemoveTwoVals(X):
         if len(X[col].unique()) == 2:
             if np.nan in set(X[col].unique()):
                 to_remove.append(col)
-    print("remove %d columns" % len(to_remove))
+    # print("remove %d columns" % len(to_remove))
     X = X.drop(to_remove,axis=1)
     return X
 
 # delete year columns
 def RemoveYearColumns(basic_info):
     cols = [col for col in basic_info.columns if basic_info[col].dtypes != object and len(basic_info[basic_info[col] > 2000]) * 1.0 / basic_info[col].count() > 0.9 and col != 'ccx_id']
-    print("remove %d columns" % len(cols))
+    # print("remove %d columns" % len(cols))
     basic_info = basic_info.drop(cols,axis=1)
     return basic_info
 
@@ -127,6 +128,22 @@ def GenerateCategoricalFeatures(consuming):
         res = pd.merge(res,temp,on='ccx_id',how='left').fillna(0)
     return res
 
+'''
+# convert to categorical of consuming
+def ConvertToCategorical(X,threshold):
+    has = ['ccx_id','times','cost','cost_each_time']
+    cols = [col for col in X.columns if col not in has]
+    to_categorical_cols = [col for col in cols if len(X[col].unique()) < threshold]
+    if len(to_categorical_cols) == 0:
+        return X
+    enc = OneHotEncoder(sparse=False)
+    temp = pd.DataFrame(enc.fit_transform(X[to_categorical_cols]))
+    temp['ccx_id'] = X['ccx_id']
+    X = X.drop(columns=to_categorical_cols,axis=1)
+    X = pd.merge(X,temp)
+    return X
+'''
+
 # remove 0 columns from consuming
 def RemoveZero(X,threshold):
     to_remove = []
@@ -136,19 +153,27 @@ def RemoveZero(X,threshold):
         if len(X[X[col] != 0]) * 1.0 / total < threshold:
             to_remove.append(col)
     X = X.drop(to_remove,axis=1)
-    print("remove %d columns" % len(to_remove))
+    # print("remove %d columns" % len(to_remove))
     return X
 
 # process consuming
 def GetConsuming(consuming_info):
-    consuming_info = DeleteComplicate(consuming_info)
-    cost = GenerateCostFeatures(consuming_info)
-    # merge each user cost each date
-    cost_each_date = GetEachUserCostEachDate(consuming_info)
-    res = pd.DataFrame(GenerateCategoricalFeatures(consuming_info))
-    consuming_info = pd.merge(cost,res)
-    consuming_info = pd.merge(consuming_info,cost_each_date,how='left')
-    consuming_info = RemoveZero(consuming_info,0.2)
+    consuming = DeleteComplicate(consuming_info)
+    # consuming
+    # max_pay = pd.DataFrame(consuming.groupby(['ccx_id'])['V_5'].max().reset_index())
+    # max_pay = max_pay.rename(columns={'V_5':'max_pay'})
+    # min_pay = pd.DataFrame(consuming.groupby(['ccx_id'])['V_5'].min().reset_index())
+    # min_pay = min_pay.rename(columns={'V_5':'min_pay'})
+    # pay = pd.merge(max_pay,min_pay)
+    # pay = max_pay
+    # pay['difference'] = pay['max_pay'] - pay['min_pay']
+    cost = GenerateCostFeatures(consuming)
+    res = pd.DataFrame(GenerateCategoricalFeatures(consuming))
+    cost_each_date = GetEachUserCostEachDate(consuming)
+    res = pd.merge(cost,res)
+    res = pd.merge(res,cost_each_date)
+    consuming_info = RemoveZero(res,0.2)
+    # consuming_info = RemoveZero(pd.merge(res,pay),0.2)
     return consuming_info
 
 # process query
@@ -269,29 +294,32 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     reg = LogisticRegression(max_iter=1000)
     # read behaivor
     basic_info = GetBehavior(train_behavior_A)
+    print("behavior has %d features" % len(basic_info.columns))
     # read consuming
     consuming_info = GetConsuming(train_consumer_A)
+    print("consuming has %d features" % len(consuming_info.columns))
     info = pd.merge(basic_info,consuming_info,how='left')
     # # read query
     uids = basic_info['ccx_id'].unique()
     query_info = GetQueryFeatures(train_ccx_A,uids)
+    print("query has %d features" % len(query_info.columns))
     info = pd.merge(info,query_info,how='left')
     # info = basic_info
     info = pd.merge(info,Y,how="outer")
     label = info['target']
     features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
-
+    print(len(features))
 
     # lightgbm
     # split train_data and test_data
 
-    # param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
-    # train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
-    # print(np.mean((lgb.cv(param, train_data, 10, nfold=5))['auc-mean']))
+    param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
+    train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
+    print(np.mean((lgb.cv(param, train_data, 10, nfold=5))['auc-mean']))
 
-    res = Metric(reg,info[features],label,5)
+    # res = Metric(reg,info[features],label,5)
     # res = MetricOnXgboost(info[features],label,5)
-    print(res)
+    # print(res)
 
 # Genrate Results
 def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B):
