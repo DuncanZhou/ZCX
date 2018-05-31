@@ -308,14 +308,14 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     info = pd.merge(info,Y,how="outer")
     label = info['target']
     features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
-    print(len(features))
+    # print(len(features))
 
     # lightgbm
     # split train_data and test_data
 
     param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
     train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
-    print(np.mean((lgb.cv(param, train_data, 10, nfold=5))['auc-mean']))
+    print(np.mean((lgb.cv(param, train_data, 100, nfold=5))['auc-mean']))
 
     # res = Metric(reg,info[features],label,5)
     # res = MetricOnXgboost(info[features],label,5)
@@ -323,7 +323,7 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
 
 # Genrate Results
 def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B):
-    reg = LogisticRegression()
+    # reg = LogisticRegression()
     # read behaivor
     basic_info = GetBehavior(train_behavior_A)
     # read consuming
@@ -336,7 +336,17 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     info = pd.merge(info,Y,how="outer")
     label = info['target']
     features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
-    reg = Train(reg,info[features],label)
+
+    # logistics regression
+    # reg = Train(reg,info[features],label)
+
+    # lightgbm
+    param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
+    train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
+    bst = lgb.train(param,train_data,100)
+
+    # gbdt
+    # est = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, random_state=0, loss='ls').fit(PreProcess(info[features],False), label)
 
     test_basic_info_A = GetBehavior(test_behavior_A)
     uids = test_basic_info_A['ccx_id'].unique()
@@ -350,19 +360,48 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
         test_info_A[col] = 0
     predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
     predict_result_A['ccx_id'] = test_basic_info_A['ccx_id'].unique()
-    predict_result_A['prob'] = reg.predict_proba(PreProcess(test_info_A[features]))[:,1]
+
+    # logistics regression
+    # predict_result_A['prob'] = reg.predict_proba(PreProcess(test_info_A[features]))[:,1]
+
+    # lightgbm
+    predict_result_A['prob'] = bst.predict(PreProcess(test_info_A[features],False))
+
+    # gbdt
+    # predict_result_A['prob'] = est.predict(PreProcess(test_info_A[features],False))
+
     predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
+
+
     # predict_result_B using test_A
     test_basic_info_B = GetBehavior(test_behavior_B)
     test_consuming_info_B = GetConsuming(test_consumer_B)
     test_info_B = pd.merge(test_basic_info_B,test_consuming_info_B)
     # fill features
-    lost_features = set(features) - set(test_info_B.columns)
+    # lost_features = set(features) - set(test_info_B.columns)
+    lost_features = set(test_info_B.columns) - set(features)
     for col in lost_features:
-        test_info_B[col] = 0
+        info[col] = 0
+    # retrain
+    features_B = [col for col in test_info_B.columns if col != 'ccx_id']
+
+    # logistics regression
+    # reg = Train(reg,info[features_B],label)
+
+    # lightgbm
+    param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
+    train_data = lgb.Dataset(PreProcess(info[features_B],False),label=label)
+    bst = lgb.train(param,train_data,100)
+
     predict_result_B = pd.DataFrame(columns=['ccx_id','prob'])
     predict_result_B['ccx_id'] = test_basic_info_B['ccx_id'].unique()
-    predict_result_B['prob'] = reg.predict_proba(PreProcess(test_info_B[features]))[:,1]
+
+    # logistics regression
+    # predict_result_B['prob'] = reg.predict_proba(PreProcess(test_info_B[features_B]))[:,1]
+
+    # lightgbm
+    predict_result_B['prob'] = bst.predict(PreProcess(test_info_B[features_B],False))
+
     predict_result_B.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
     # pred_A = reg.predict()
 Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
