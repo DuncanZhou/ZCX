@@ -307,7 +307,7 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     # info = basic_info
     info = pd.merge(info,Y,how="outer")
     label = info['target']
-    features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
+    features = [col for col in info.columns if col != 'target']
     # print(len(features))
 
     # lightgbm
@@ -323,86 +323,49 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
 
 # Genrate Results
 def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B):
-    # reg = LogisticRegression()
     # read behaivor
-    basic_info = GetBehavior(train_behavior_A)
+
+    train_index = len(train_behavior_A)
+    test_A_index = len(test_behavior_A)
+
+    behavior_info = pd.concat([train_behavior_A,test_behavior_A,test_behavior_B])
+    basic_info = GetBehavior(behavior_info)
     # read consuming
-    consuming_info = GetConsuming(train_consumer_A)
+    consuming_info = pd.concat([train_consumer_A,test_consumer_A,test_consumer_B])
+    consuming_info = GetConsuming(consuming_info)
+
     # read ccx_A
+    ccx_A = pd.concat([train_ccx_A,test_ccx_A])
     uids = basic_info['ccx_id'].unique()
-    query_info = GetQueryFeatures(train_ccx_A,uids)
+    query_info = GetQueryFeatures(ccx_A,uids)
+
     info = pd.merge(basic_info,consuming_info,how='left')
     info = pd.merge(info,query_info,how='left')
     info = pd.merge(info,Y,how="outer")
-    label = info['target']
-    features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
-
-    # logistics regression
-    # reg = Train(reg,info[features],label)
+    label = info.iloc[:train_index]['target']
+    features = [col for col in info.columns if col != 'target']
 
     # lightgbm
     param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
-    train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
+    train_data = lgb.Dataset(PreProcess(info.iloc[:train_index][features],False),label=label)
     bst = lgb.train(param,train_data,100)
 
-    # gbdt
-    # est = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, random_state=0, loss='ls').fit(PreProcess(info[features],False), label)
-
-    test_basic_info_A = GetBehavior(test_behavior_A)
-    uids = test_basic_info_A['ccx_id'].unique()
-    test_consuming_info_A = GetConsuming(test_consumer_A)
-    test_query_info_A = GetQueryFeatures(train_ccx_A,uids)
-    test_info_A = pd.merge(test_basic_info_A,test_consuming_info_A)
-    test_info_A = pd.merge(test_info_A,test_query_info_A,how='left')
-    # fill features
-    lost_features = set(features) - set(test_info_A.columns)
-    for col in lost_features:
-        test_info_A[col] = 0
     predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
-    predict_result_A['ccx_id'] = test_basic_info_A['ccx_id'].unique()
+    predict_result_A['ccx_id'] = info.iloc[train_index:train_index+test_A_index]['ccx_id'].unique()
 
-    # logistics regression
-    # predict_result_A['prob'] = reg.predict_proba(PreProcess(test_info_A[features]))[:,1]
 
     # lightgbm
-    predict_result_A['prob'] = bst.predict(PreProcess(test_info_A[features],False))
-
-    # gbdt
-    # predict_result_A['prob'] = est.predict(PreProcess(test_info_A[features],False))
+    predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_index:train_index+test_A_index][features],False))
 
     predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
 
-
-    # predict_result_B using test_A
-    test_basic_info_B = GetBehavior(test_behavior_B)
-    test_consuming_info_B = GetConsuming(test_consumer_B)
-    test_info_B = pd.merge(test_basic_info_B,test_consuming_info_B)
-    # fill features
-    # lost_features = set(features) - set(test_info_B.columns)
-    lost_features = set(test_info_B.columns) - set(features)
-    for col in lost_features:
-        info[col] = 0
-    # retrain
-    features_B = [col for col in test_info_B.columns if col != 'ccx_id']
-
-    # logistics regression
-    # reg = Train(reg,info[features_B],label)
-
-    # lightgbm
-    param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
-    train_data = lgb.Dataset(PreProcess(info[features_B],False),label=label)
-    bst = lgb.train(param,train_data,100)
-
     predict_result_B = pd.DataFrame(columns=['ccx_id','prob'])
-    predict_result_B['ccx_id'] = test_basic_info_B['ccx_id'].unique()
-
-    # logistics regression
-    # predict_result_B['prob'] = reg.predict_proba(PreProcess(test_info_B[features_B]))[:,1]
+    predict_result_B['ccx_id'] = info.iloc[train_index+test_A_index:]['ccx_id'].unique()
 
     # lightgbm
-    predict_result_B['prob'] = bst.predict(PreProcess(test_info_B[features_B],False))
+    predict_result_B['prob'] = bst.predict(PreProcess(info.iloc[train_index+test_A_index:][features],False))
 
     predict_result_B.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
     # pred_A = reg.predict()
-Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
-# Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
+# Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
+Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
