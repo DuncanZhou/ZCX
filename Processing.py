@@ -307,7 +307,7 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     # info = basic_info
     info = pd.merge(info,Y,how="outer")
     label = info['target']
-    features = [col for col in info.columns if col != 'target']
+    features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
     # print(len(features))
 
     # lightgbm
@@ -325,7 +325,7 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
 def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B):
     # read behaivor
 
-    train_index = len(train_behavior_A)
+    train_A_index = len(train_behavior_A)
     test_A_index = len(test_behavior_A)
 
     behavior_info = pd.concat([train_behavior_A,test_behavior_A,test_behavior_B])
@@ -342,30 +342,36 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     info = pd.merge(basic_info,consuming_info,how='left')
     info = pd.merge(info,query_info,how='left')
     info = pd.merge(info,Y,how="outer")
-    label = info.iloc[:train_index]['target']
+    label = info.iloc[:train_A_index]['target']
     features = [col for col in info.columns if col != 'target']
 
     # lightgbm
     param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
-    train_data = lgb.Dataset(PreProcess(info.iloc[:train_index][features],False),label=label)
+    train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
     bst = lgb.train(param,train_data,100)
 
     predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
-    predict_result_A['ccx_id'] = info.iloc[train_index:train_index+test_A_index]['ccx_id'].unique()
+    predict_result_A['ccx_id'] = info.iloc[train_A_index:train_A_index+test_A_index]['ccx_id'].unique()
 
 
     # lightgbm
-    predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_index:train_index+test_A_index][features],False))
+
+    predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_A_index:train_A_index+test_A_index][features],False))
 
     predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
 
     predict_result_B = pd.DataFrame(columns=['ccx_id','prob'])
-    predict_result_B['ccx_id'] = info.iloc[train_index+test_A_index:]['ccx_id'].unique()
+    predict_result_B['ccx_id'] = info.iloc[train_A_index+test_A_index:]['ccx_id'].unique()
 
     # lightgbm
-    predict_result_B['prob'] = bst.predict(PreProcess(info.iloc[train_index+test_A_index:][features],False))
+    # retrain
+    features_B = [col for col in features if col != 'ccx_id']
+    train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features_B],False),label=label)
+    bst = lgb.train(param,train_data,100)
+
+    predict_result_B['prob'] = bst.predict(PreProcess(info.iloc[train_A_index+test_A_index:][features_B],False))
 
     predict_result_B.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
     # pred_A = reg.predict()
-# Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
-Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
+Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
+# Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
