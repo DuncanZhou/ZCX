@@ -14,6 +14,8 @@ from sklearn.ensemble import GradientBoostingRegressor
 from sklearn.preprocessing import OneHotEncoder
 # import xgboost as xgb
 import lightgbm as lgb
+from pyfm import pylibfm
+from sklearn.feature_extraction import DictVectorizer
 
 train_consumer_A = pd.read_csv("./train/scene_A/train_consumer_A.csv")
 train_behavior_A = pd.read_csv('./train/scene_A/train_behavior_A.csv')
@@ -79,6 +81,16 @@ def GetBehavior(basic_info):
 
 
 # process consuming
+
+# count the bad data
+def CountBadCount(df):
+    c = 'V_11'
+    temp = df[["ccx_id", c]]
+    temp = temp[pd.isnull(temp[c]) | (temp[c] == "0000-00-00 00:00:00")]
+    newc = c + "_bad_count"
+    temp = temp.groupby("ccx_id")[c].count().reset_index().rename(columns={c: newc})
+    return temp
+
 # remove duplicated rows and keep the last
 def DeleteComplicate(consuming):
     compare_cols = [col for col in consuming.columns if col != 'V_11']
@@ -158,6 +170,8 @@ def RemoveZero(X,threshold):
 
 # process consuming
 def GetConsuming(consuming_info):
+    # count the bad data
+    # temp = CountBadCount(consuming_info)
     consuming = DeleteComplicate(consuming_info)
     # consuming
     # max_pay = pd.DataFrame(consuming.groupby(['ccx_id'])['V_5'].max().reset_index())
@@ -173,16 +187,44 @@ def GetConsuming(consuming_info):
     res = pd.merge(cost,res)
     res = pd.merge(res,cost_each_date)
     consuming_info = RemoveZero(res,0.2)
+    # consuming_info = pd.merge(consuming_info,temp,how="left").fillna(0)
     # consuming_info = RemoveZero(pd.merge(res,pay),0.2)
     return consuming_info
 
 # process query
+# count query time in each month
+def CountOneMonth(data,month):
+    cur = pd.DataFrame(columns={'ccx_id'})
+    cur['ccx_id'] = data['ccx_id'].unique()
+    res = data['2017-%d' % month:'2017-%d' % (month+1)].groupby('ccx_id')['count'].sum().reset_index().rename(columns={'count':'month%d'%month})
+    cur = pd.merge(cur,res,how='left').fillna(0)
+    return cur
+
+# total month
+def CountQueryTimesEachMonth(data):
+    cur = pd.DataFrame(columns={'ccx_id'})
+    cur['ccx_id'] = data['ccx_id'].unique()
+    months = [1,2,3,4,5]
+    for m in months:
+        temp = CountOneMonth(data,m)
+        cur = pd.merge(cur,temp,how='left')
+    return cur
+
+# count query time
+def QueryTimes(data):
+    date = pd.to_datetime(data['var_06'])
+    temp = data
+    temp['query_date'] = date
+    temp.set_index('query_date',inplace=True)
+    return CountQueryTimesEachMonth(temp)
+
 # generate query data
 def GetQueryFeatures(query_info,uids):
     res = pd.DataFrame(columns=['ccx_id'])
     res['ccx_id'] = uids
     query_info['count'] = 1
     categorical_cols = ['var_01','var_02','var_03','var_04','var_05']
+    # categorical_cols = ['var_01','var_02']
     for col in categorical_cols:
         temp = query_info.groupby(['ccx_id',col])['count'].sum().reset_index().pivot_table(index='ccx_id',columns=col).fillna(0)
         uid = temp.index
@@ -194,7 +236,10 @@ def GetQueryFeatures(query_info,uids):
     temp.rename(columns={'count':'query_times'},inplace=True)
     res = pd.merge(res,temp,how='left').fillna(0)
     # remove 0 columns from query
-    # res = RemoveZero(res,0.01)
+    res = RemoveZero(res,0.01)
+    # query times each month ([1...5])
+    query_times_each_month = QueryTimes(query_info)
+    res = pd.merge(res,query_times_each_month,how='left')
     return res
 
 # process data
@@ -232,15 +277,15 @@ def Train(regression,X,Y):
     regression = regression.fit(X,Y)
     return regression
 
-xgb_params = {
-    'eta': 0.05,
-    'max_depth': 5,
-    'subsample': 0.7,
-    'colsample_bytree': 0.7,
-    'objective': 'binary:logistic',
-    'eval_metric': 'auc',
-    'silent': 1
-}
+# xgb_params = {
+#     'eta': 0.05,
+#     'max_depth': 5,
+#     'subsample': 0.7,
+#     'colsample_bytree': 0.7,
+#     'objective': 'binary:logistic',
+#     'eval_metric': 'auc',
+#     'silent': 1
+# }
 
 # metric on sklearn regression
 def Metric(reg,X,Y,n):
@@ -263,6 +308,14 @@ def Metric(reg,X,Y,n):
         # gbdt
         est = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, random_state=0, loss='ls').fit(PreProcess(X_train,False), Y_train)
         pred = est.predict(PreProcess(X_test,False))
+
+        # fm
+        # 需要转换成字典格式
+        # v = DictVectorizer()
+        # # print(PreProcess(X_train,False).to_dict("records"))
+        # train = v.fit_transform(PreProcess(X_train,False).to_dict("records"))
+        # reg.fit(train,np.asarray(Y_train.values))
+        # pred = reg.predict(v.transform(PreProcess(X_test,False).to_dict("records")))
         # print(pred)
         auc += roc_auc_score(Y_test,pred)
     # compute average auc
@@ -289,14 +342,23 @@ def MetricOnXgboost(X,Y,n):
     return auc / n
 '''
 
+# process the format of data (fm)
+def FormatData(data):
+    train = data.to_dict('records')
+    # 需要转换成字典格式
+    v = DictVectorizer()
+    return v.fit_transform(train)
+
 # Run
 def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B):
-    reg = LogisticRegression(max_iter=1000)
+
     # read behaivor
     basic_info = GetBehavior(train_behavior_A)
     print("behavior has %d features" % len(basic_info.columns))
     # read consuming
     consuming_info = GetConsuming(train_consumer_A)
+    # fei_features = pd.read_csv("feats_0601.csv")
+
     print("consuming has %d features" % len(consuming_info.columns))
     info = pd.merge(basic_info,consuming_info,how='left')
     # # read query
@@ -304,18 +366,34 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     query_info = GetQueryFeatures(train_ccx_A,uids)
     print("query has %d features" % len(query_info.columns))
     info = pd.merge(info,query_info,how='left')
+    # info = pd.merge(info,fei_features,how="left")
     # info = basic_info
     info = pd.merge(info,Y,how="outer")
     label = info['target']
-    features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
+    features = [col for col in info.columns if col != 'target']
     # print(len(features))
 
     # lightgbm
-    # split train_data and test_data
-
-    param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
+    params = {
+        'task': 'train',
+        'boosting_type': 'gbdt',
+        'objective': 'binary',
+        'application': 'regression_l2',
+        'metric': {'auc'},
+        'num_leaves': 31,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.8,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'verbose': 1,
+    }
     train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
-    print(np.mean((lgb.cv(param, train_data, 100, nfold=5))['auc-mean']))
+    print(np.mean((lgb.cv(params, train_data, 150, nfold=5))['auc-mean']))
+
+    # fm
+    # fm = pylibfm.FM(num_factors=10, num_iter=100, verbose=True, task="regression", initial_learning_rate=0.001, learning_rate_schedule="optimal")
+    # res = Metric(fm,info[features],label,5)
+    # print(res)
 
     # res = Metric(reg,info[features],label,5)
     # res = MetricOnXgboost(info[features],label,5)
@@ -338,6 +416,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     ccx_A = pd.concat([train_ccx_A,test_ccx_A])
     uids = basic_info['ccx_id'].unique()
     query_info = GetQueryFeatures(ccx_A,uids)
+    ccx_features = set([col for col in query_info.columns])
 
     info = pd.merge(basic_info,consuming_info,how='left')
     info = pd.merge(info,query_info,how='left')
@@ -346,9 +425,21 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     features = [col for col in info.columns if col != 'target']
 
     # lightgbm
-    param = {'num_leaves':31, 'num_trees':100, 'objective':'binary','metric':'auc'}
+    params = {
+        'task': 'train',
+        'boosting_type': 'gbdt',
+        'objective': 'binary',
+        'application': 'regression_l2',
+        'metric': {'auc'},
+        'num_leaves': 31,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.8,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'verbose': 1,
+    }
     train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
-    bst = lgb.train(param,train_data,100)
+    bst = lgb.train(params,train_data,150)
 
     predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
     predict_result_A['ccx_id'] = info.iloc[train_A_index:train_A_index+test_A_index]['ccx_id'].unique()
@@ -365,13 +456,32 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
 
     # lightgbm
     # retrain
+    param = {'num_leaves':31, 'objective':'binary','metric':'auc','boosting_type': 'gbdt'}
     features_B = [col for col in features if col != 'ccx_id']
     train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features_B],False),label=label)
     bst = lgb.train(param,train_data,100)
 
     predict_result_B['prob'] = bst.predict(PreProcess(info.iloc[train_A_index+test_A_index:][features_B],False))
-
     predict_result_B.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
     # pred_A = reg.predict()
 Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
 # Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
+#
+# def testfm():
+#     from pyfm import pylibfm
+#     from sklearn.feature_extraction import DictVectorizer
+#     import numpy as np
+#     train = [
+#         {"user": "1", "item": "5", "age": 19},
+#         {"user": "2", "item": "43", "age": 33},
+#         {"user": "3", "item": "20", "age": 55},
+#         {"user": "4", "item": "10", "age": 20},
+#     ]
+#     v = DictVectorizer()
+#     X = v.fit_transform(train)
+#     y = np.repeat(1.0,X.shape[0])
+#     fm = pylibfm.FM()
+#     fm.fit(X,y)
+#     fm.predict(v.transform({"user": "1", "item": "10", "age": 24}))
+#
+# testfm()
