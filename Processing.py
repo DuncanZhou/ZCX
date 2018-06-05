@@ -4,17 +4,17 @@
 
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LogisticRegression
+#from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import KFold
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import LabelEncoder
 from sklearn import preprocessing
-from sklearn.cross_validation import train_test_split
+#from sklearn.cross_validation import train_test_split
 from sklearn.ensemble import GradientBoostingRegressor
-from sklearn.preprocessing import OneHotEncoder
+#from sklearn.preprocessing import OneHotEncoder
 # import xgboost as xgb
 import lightgbm as lgb
-from pyfm import pylibfm
+#from pyfm import pylibfm
 from sklearn.feature_extraction import DictVectorizer
 
 train_consumer_A = pd.read_csv("./train/scene_A/train_consumer_A.csv")
@@ -349,6 +349,59 @@ def FormatData(data):
     v = DictVectorizer()
     return v.fit_transform(train)
 
+# label B
+def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,Max_Iteration):
+    # process behaivor_info
+    behavior_info = pd.concat([train_behavior_A,train_behavior_B])
+    behavior_info = GetBehavior(behavior_info)
+
+    # process consuming_info
+    consuming_info = pd.concat([train_consumer_A,train_consumer_B])
+    consuming_info = GetConsuming(consuming_info)
+
+    info = pd.merge(behavior_info,consuming_info,how = 'left')
+    # add the label of A
+    info = pd.merge(info,Y,how="outer")
+    features = [col for col in info.columns if col != 'target' and col != 'ccx_id']
+
+    A_info = info[info.ccx_id.isin(train_behavior_A.ccx_id)]
+    B_info = info[info.ccx_id.isin(train_behavior_B.ccx_id)]
+    # iteration Max_iteration times
+    # lightgbm
+    params = {
+        'task': 'train',
+        'boosting_type': 'gbdt',
+        'objective': 'binary',
+        'metric': {'auc'},
+        'num_leaves': 31,
+        'learning_rate': 0.05,
+        'feature_fraction': 0.8,
+        'bagging_fraction': 0.8,
+        'bagging_freq': 5,
+        'verbose': 1,
+    }
+    iteration = 0
+    train_info = A_info
+    leave = B_info
+    while iteration < Max_Iteration:
+        train_data = lgb.Dataset(PreProcess(train_info[features],False),label=train_info['target'])
+        bst = lgb.train(params,train_data,150)
+        # predict B
+        pred = bst.predict(PreProcess(leave[features],False))
+        leave['predict'] = pred
+        leave.loc[leave['predict'] >= 0.6,'target'] = 1
+        leave.loc[leave['predict'] <= 0.2,'target'] = 0
+        # add B(has labels) into traindata
+        to_add = leave[~leave['target'].isnull()]
+        leave = leave[leave['target'].isnull()]
+        train_info = pd.concat([train_info,to_add])
+        iteration += 1
+        if(len(to_add) == 0):
+            break
+    print("iteration %d times" % iteration)
+    return train_info
+
+
 # Run
 def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B):
 
@@ -365,7 +418,7 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     uids = basic_info['ccx_id'].unique()
     query_info = GetQueryFeatures(train_ccx_A,uids)
     print("query has %d features" % len(query_info.columns))
-    info = pd.merge(info,query_info,how='left')
+    # info = pd.merge(info,query_info,how='left')
     # info = pd.merge(info,fei_features,how="left")
     # info = basic_info
     info = pd.merge(info,Y,how="outer")
@@ -378,7 +431,6 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
         'task': 'train',
         'boosting_type': 'gbdt',
         'objective': 'binary',
-        'application': 'regression_l2',
         'metric': {'auc'},
         'num_leaves': 31,
         'learning_rate': 0.05,
@@ -388,8 +440,16 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
         'verbose': 1,
     }
     train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
-    print(np.mean((lgb.cv(params, train_data, 150, nfold=5))['auc-mean']))
+    print("without B data auc is %.3f(using bahavior and consuming data)" % np.mean((lgb.cv(params, train_data, 150, nfold=5))['auc-mean']))
 
+
+    # add B
+    train_data = LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,10)
+    train_data = lgb.Dataset(PreProcess(train_data[features],False),label=train_data['target'])
+    print("with B data auc is %.3f(using bahavior and consuming data)" % np.mean((lgb.cv(params, train_data, 150, nfold=5))['auc-mean']))
+
+
+    #
     # fm
     # fm = pylibfm.FM(num_factors=10, num_iter=100, verbose=True, task="regression", initial_learning_rate=0.001, learning_rate_schedule="optimal")
     # res = Metric(fm,info[features],label,5)
@@ -429,7 +489,6 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
         'task': 'train',
         'boosting_type': 'gbdt',
         'objective': 'binary',
-        'application': 'regression_l2',
         'metric': {'auc'},
         'num_leaves': 31,
         'learning_rate': 0.05,
