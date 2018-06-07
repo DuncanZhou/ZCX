@@ -32,6 +32,19 @@ test_behavior_B = pd.read_csv('./test/scene_B/test_behavior_B.csv')
 Y = pd.read_csv('./train/scene_A/train_target_A.csv')
 
 
+params = {
+    'task': 'train',
+    'boosting_type': 'gbdt',
+    'objective': 'binary',
+    'metric': {'auc'},
+    'num_leaves': 31,
+    'learning_rate': 0.05,
+    'feature_fraction': 0.8,
+    'bagging_fraction': 0.8,
+    'bagging_freq': 5,
+    'verbose': 1,
+}
+
 def RemoveUnique(X):
     to_remove = []
     cols = X.columns
@@ -298,7 +311,6 @@ def Metric(reg,X,Y,n):
 
     # cross validation
     kf = KFold(n_splits=n)
-    kf.get_n_splits(X)
     for train_index, test_index in kf.split(X):
         X_train,X_test = X.iloc[train_index], X.iloc[test_index]
         Y_train,Y_test = Y.iloc[train_index], Y.iloc[test_index]
@@ -308,6 +320,10 @@ def Metric(reg,X,Y,n):
         # gbdt
         est = GradientBoostingRegressor(n_estimators=100, learning_rate=0.1, random_state=0, loss='ls').fit(PreProcess(X_train,False), Y_train)
         pred = est.predict(PreProcess(X_test,False))
+
+        # lightgbm
+        # merge X_train and B_info
+
 
         # fm
         # 需要转换成字典格式
@@ -321,6 +337,33 @@ def Metric(reg,X,Y,n):
     # compute average auc
     return auc / n
 
+def MetricLGBWithB_data(info,n,B_info=None):
+    auc = 0
+    features = [col for col in info.columns if col != 'ccx_id' and col != 'target']
+    X = info[features]
+    Y = info['target']
+
+    # cross validation
+    kf = KFold(n_splits=n,shuffle=True)
+    for train_index, test_index in kf.split(X):
+        X_train,X_test = X.iloc[train_index], X.iloc[test_index]
+        Y_train,Y_test = Y.iloc[train_index], Y.iloc[test_index]
+
+        # lightgbm
+        # merge X_train and B_info
+
+        # train_data = X_train
+        # label = Y_train
+        train_data = pd.concat([X_train,B_info[features]])
+        label = pd.concat([Y_train,B_info['target']])
+
+        train_data = lgb.Dataset(PreProcess(train_data,False),label=label)
+        bst = lgb.train(params,train_data,num_boost_round=150)
+        pred = bst.predict(PreProcess(X_test,False),num_iteration=bst.best_iteration)
+        print(pred)
+        auc += roc_auc_score(Y_test,pred)
+    # compute average auc
+    return auc / n
 '''
 # metric on xgboost
 def MetricOnXgboost(X,Y,n):
@@ -350,13 +393,13 @@ def FormatData(data):
     return v.fit_transform(train)
 
 # label B
-def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,Max_Iteration):
+def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,Max_Iteration,test_behavior=None,test_consumer=None):
     # process behaivor_info
-    behavior_info = pd.concat([train_behavior_A,train_behavior_B])
+    behavior_info = pd.concat([train_behavior_A,train_behavior_B,test_behavior])
     behavior_info = GetBehavior(behavior_info)
 
     # process consuming_info
-    consuming_info = pd.concat([train_consumer_A,train_consumer_B])
+    consuming_info = pd.concat([train_consumer_A,train_consumer_B,test_consumer])
     consuming_info = GetConsuming(consuming_info)
 
     info = pd.merge(behavior_info,consuming_info,how = 'left')
@@ -368,18 +411,7 @@ def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,M
     B_info = info[info.ccx_id.isin(train_behavior_B.ccx_id)]
     # iteration Max_iteration times
     # lightgbm
-    params = {
-        'task': 'train',
-        'boosting_type': 'gbdt',
-        'objective': 'binary',
-        'metric': {'auc'},
-        'num_leaves': 31,
-        'learning_rate': 0.05,
-        'feature_fraction': 0.8,
-        'bagging_fraction': 0.8,
-        'bagging_freq': 5,
-        'verbose': 1,
-    }
+
     iteration = 0
     train_info = A_info
     leave = B_info
@@ -387,10 +419,10 @@ def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,M
         train_data = lgb.Dataset(PreProcess(train_info[features],False),label=train_info['target'])
         bst = lgb.train(params,train_data,150)
         # predict B
-        pred = bst.predict(PreProcess(leave[features],False))
+        pred = bst.predict(PreProcess(leave[features],False),num_iteration=bst.best_iteration)
         leave['predict'] = pred
-        leave.loc[leave['predict'] >= 0.6,'target'] = 1
-        leave.loc[leave['predict'] <= 0.2,'target'] = 0
+        leave.loc[leave['predict'] > 0.7,'target'] = 1
+        leave.loc[leave['predict'] < 0.1,'target'] = 0
         # add B(has labels) into traindata
         to_add = leave[~leave['target'].isnull()]
         leave = leave[leave['target'].isnull()]
@@ -399,7 +431,10 @@ def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,M
         if(len(to_add) == 0):
             break
     print("iteration %d times" % iteration)
-    return train_info
+    train_info = train_info.drop(['predict'],axis=1)
+    # read test data
+    test_info = info[info.ccx_id.isin(test_behavior.ccx_id)]
+    return train_info,test_info
 
 
 # Run
@@ -423,30 +458,30 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     # info = basic_info
     info = pd.merge(info,Y,how="outer")
     label = info['target']
-    features = [col for col in info.columns if col != 'target']
+    features = [col for col in info.columns if col != 'target' and col != 'ccx_id']
     # print(len(features))
 
     # lightgbm
-    params = {
-        'task': 'train',
-        'boosting_type': 'gbdt',
-        'objective': 'binary',
-        'metric': {'auc'},
-        'num_leaves': 31,
-        'learning_rate': 0.05,
-        'feature_fraction': 0.8,
-        'bagging_fraction': 0.8,
-        'bagging_freq': 5,
-        'verbose': 1,
-    }
-    train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
-    print("without B data auc is %.3f(using bahavior and consuming data)" % np.mean((lgb.cv(params, train_data, 150, nfold=5))['auc-mean']))
+    # train_data = lgb.Dataset(PreProcess(info[features],False),label=label)
+    # print("without B data auc is %.3f(using bahavior and consuming data)" % np.mean((lgb.cv(params, train_data, 150, nfold=5))['auc-mean']))
+    # res = MetricLGBWithB_data(info,5,None)
+    # print(res)
 
 
     # add B
-    train_data = LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,10)
-    train_data = lgb.Dataset(PreProcess(train_data[features],False),label=train_data['target'])
-    print("with B data auc is %.3f(using bahavior and consuming data)" % np.mean((lgb.cv(params, train_data, 150, nfold=5))['auc-mean']))
+    train_data_with_B,test = LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,10)
+    train_behavior_B = pd.merge(train_data_with_B,query_info,how='left')
+    # split A and B
+    A_info = train_data_with_B[train_data_with_B['ccx_id'].isin(train_behavior_A['ccx_id'])]
+    B_info = train_data_with_B[train_data_with_B.ccx_id.isin(train_behavior_B['ccx_id'])]
+    res = MetricLGBWithB_data(A_info,5,B_info)
+    print("5 Fold CV in A with B data is %.4f" % res)
+
+
+    # features_with_B = [col for col in train_data_with_B.columns if col != 'target' and col != 'ccx_id']
+    # train_data_with_B = pd.merge(train_data_with_B,query_info,how='left')
+    # train_data_with_B = lgb.Dataset(PreProcess(train_data_with_B[features_with_B],False),label=train_data_with_B['target'])
+    # print("with B data auc is %.3f(using bahavior and consuming data)" % np.mean((lgb.cv(params, train_data_with_B, 150, nfold=5))['auc-mean']))
 
 
     #
@@ -485,18 +520,6 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     features = [col for col in info.columns if col != 'target']
 
     # lightgbm
-    params = {
-        'task': 'train',
-        'boosting_type': 'gbdt',
-        'objective': 'binary',
-        'metric': {'auc'},
-        'num_leaves': 31,
-        'learning_rate': 0.05,
-        'feature_fraction': 0.8,
-        'bagging_fraction': 0.8,
-        'bagging_freq': 5,
-        'verbose': 1,
-    }
     train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
     bst = lgb.train(params,train_data,150)
 
@@ -506,7 +529,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
 
     # lightgbm
 
-    predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_A_index:train_A_index+test_A_index][features],False))
+    predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_A_index:train_A_index+test_A_index][features],False),num_iteration=bst.best_iteration)
 
     predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
 
@@ -523,8 +546,83 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     predict_result_B['prob'] = bst.predict(PreProcess(info.iloc[train_A_index+test_A_index:][features_B],False))
     predict_result_B.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
     # pred_A = reg.predict()
-Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
+
+
+# using extra train and test data
+def ValidateByExtraData():
+    auc = 0
+    for i in range(1,6):
+        train_data,test_data = ReadExtraTrainTestData(str(i),True)
+        features = [col for col in train_data.columns if col != 'ccx_id' and col != 'target']
+        train_data = lgb.Dataset(PreProcess(train_data[features],False),label=train_data['target'])
+        bst = lgb.train(params,train_data,num_boost_round=150)
+        pred = bst.predict(PreProcess(test_data[features],False),num_iteration=bst.best_iteration)
+        print(pred)
+        auc += roc_auc_score(test_data['target'],pred)
+    return auc / 5
+
+# read train_data
+def ReadExtraTrainTestData(valid_number,use_B=False):
+    path = "./train_test/train_test/train_test_"
+    # read train A
+    train_behavior_A = pd.read_csv(path+valid_number+"/scene_A/train_behavior_A.csv")
+    train_consumer_A = pd.read_csv(path+valid_number+"/scene_A/train_consumer_A.csv")
+    train_ccx_A = pd.read_csv(path+valid_number+"/scene_A/train_ccx_A.csv")
+
+    # read test A
+    test_behavior_A = pd.read_csv(path+valid_number+"/scene_A/test_behavior_A.csv")
+    test_consumer_A = pd.read_csv(path+valid_number+"/scene_A/test_consumer_A.csv")
+    test_ccx_A = pd.read_csv(path+valid_number+"/scene_A/test_ccx_A.csv")
+
+    # read target A
+    train_target = pd.read_csv(path+valid_number+"/scene_A/train_target_A.csv")
+    test_target = pd.read_csv(path+valid_number+"/scene_A/test_target_A.csv")
+
+    # read B data(has read)
+    train_ccx = pd.concat([train_ccx_A,test_ccx_A])
+
+    if use_B:
+        # extract features
+        train_behavior_consume,test_behavior_consume = LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,10,test_behavior_A,test_consumer_A)
+        ccx = GetQueryFeatures(train_ccx,pd.concat([train_behavior_A.ccx_id,test_behavior_A.ccx_id]))
+        train_ccx = ccx[ccx.ccx_id.isin(train_behavior_A.ccx_id)]
+        test_ccx = ccx[ccx.ccx_id.isin(test_behavior_A.ccx_id)]
+
+        # generate train and test data
+        train_data = pd.merge(train_behavior_consume,train_ccx,how='left')
+        train_data = pd.merge(train_data,train_target,how='left')
+
+        test_data = pd.merge(test_behavior_consume,test_ccx,how='left')
+        test_data = pd.merge(test_data,test_target,how='left')
+
+    else:
+        train_index = len(train_behavior_A)
+
+        behavior = pd.concat([train_behavior_A,test_behavior_A])
+        behavior = GetBehavior(behavior)
+
+        consumer = pd.concat([train_consumer_A,test_consumer_A])
+        consumer = GetConsuming(consumer)
+
+        ccx = pd.concat([train_ccx_A,test_ccx_A])
+        ccx = GetQueryFeatures(ccx,behavior.ccx_id)
+
+        info = pd.merge(behavior,consumer,how='left')
+        info = pd.merge(info,ccx,how='left')
+
+        train_data = info.iloc[:train_index]
+        train_data = pd.merge(train_data,train_target,how='left')
+
+        test_data = info.iloc[train_index:]
+        test_data = pd.merge(test_data,test_target,how='left')
+    return train_data,test_data
+
+
+# Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
 # Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
+res = ValidateByExtraData()
+print(res)
+
 #
 # def testfm():
 #     from pyfm import pylibfm
