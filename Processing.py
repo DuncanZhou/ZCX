@@ -530,7 +530,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
         train_data = info.iloc[:train_A_index]
         categorical_features = np.where(train_data[features].dtypes != np.float)[0]
 
-        model=CatBoostRegressor(iterations=50, depth=3, learning_rate=0.1, loss_function='RMSE')
+        model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
         model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
 
         predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
@@ -578,6 +578,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     info = pd.merge(info,Y,how="outer")
     features = [col for col in info.columns if col != 'target']
 
+    label = info.iloc[:train_A_index]['target']
     predict_result_B = pd.DataFrame(columns=['ccx_id','prob'])
     predict_result_B['ccx_id'] = info.iloc[train_A_index+test_A_index:]['ccx_id'].unique()
 
@@ -594,7 +595,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     train_data = info.iloc[:train_A_index]
     categorical_features = np.where(train_data[features_B].dtypes != np.float)[0]
 
-    model=CatBoostRegressor(iterations=50, depth=3, learning_rate=0.1, loss_function='RMSE')
+    model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
     model.fit(train_data[features_B].fillna(-1),train_data['target'],cat_features=categorical_features)
 
     # predict_result_B['prob'] = bst.predict(PreProcess(info.iloc[train_A_index+test_A_index:][features_B],False))
@@ -620,7 +621,7 @@ def ValidateByExtraData():
 
         # categorical_features = np.where(train_data.dtypes != np.float)
 
-        model=CatBoostRegressor(iterations=50, depth=3, learning_rate=0.1, loss_function='RMSE')
+        model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
         model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
         pred = model.predict(test_data[features].fillna(-1))
         auc += roc_auc_score(test_data['target'],pred)
