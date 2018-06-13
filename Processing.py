@@ -426,8 +426,8 @@ def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,t
         # predict B
         pred = bst.predict(PreProcess(leave[features],False),num_iteration=bst.best_iteration)
         leave['predict'] = pred
-        leave.loc[leave['predict'] >= 0.6,'target'] = leave.loc[leave['predict'] >= 0.6,'predict']
-        leave.loc[leave['predict'] <= 0.4,'target'] = leave.loc[leave['predict'] <= 0.4,'predict']
+        leave.loc[leave['predict'] >= 0.7,'target'] = leave.loc[leave['predict'] >= 0.7,'predict']
+        leave.loc[leave['predict'] <= 0.1,'target'] = leave.loc[leave['predict'] <= 0.1,'predict']
         # add B(has labels) into traindata
         to_add = leave[~leave['target'].isnull()]
         leave = leave[leave['target'].isnull()]
@@ -500,71 +500,330 @@ def Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_be
     # res = MetricOnXgboost(info[features],label,5)
     # print(res)
 
+
+def run_ffg():
+    def preprocess_ccx_cons(ccx, cons):
+        cons['V_7'] = cons['V_7'].str.replace('/', '-')
+        ccx['var_06'] = ccx['var_06'].str.replace('/', '-')
+        cons['date'] = cons['V_7'].apply(lambda x: x.split()[0])
+        cons['time'] = cons['V_7'].apply(lambda x: x.split()[1])
+        cons['year'] = cons['date'].apply(lambda x: int(x.split('-')[0]))
+        cons['month'] = cons['date'].apply(lambda x: int(x.split('-')[1]))
+        cons['month_from_now'] = cons.apply(lambda x: (2017 - x['year']) * 12 + (6 - x['month']), axis = 1)
+        cons['day_from_now'] = (pd.to_datetime('2017-06-01') - pd.to_datetime(cons['date'])).apply(lambda x:x.days)
+        cons['hour'] = cons['time'].apply(lambda x: int(x.split(':')[0]))
+        ccx['year'] = ccx['var_06'].apply(lambda x: int(x.split('-')[0]))
+        ccx['month'] = ccx['var_06'].apply(lambda x: int(x.split('-')[1]))
+        ccx['month_from_now'] = ccx.apply(lambda x: (2017 - x['year']) * 12 + (6 - x['month']), axis = 1)
+        ccx['day_from_now'] = (pd.to_datetime('2017-06-01') - pd.to_datetime(ccx['var_06'])).apply(lambda x:x.days)
+        for ccx_var in ['var_02', 'var_03', 'var_04', 'var_05']:
+            _a = ccx.groupby(ccx_var)[ccx_var].count() / (1.0 * len(ccx))
+            ccx[ccx_var + '_float'] = ccx[ccx_var].map(_a).fillna(0.0)
+
+    def feats_b_behavior(b_a, b_b, b_a_test):
+        feats = b_a.iloc[:,20:-1].columns.values
+        for feat in feats:
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b[feat].fillna(0)
+        return feats
+
+    # time = 'day_from_now' or 'month_from_now'
+    def feats_stat_cons_time(cons, b_a, b_b, b_a_test, time):
+        feats = []
+        for agg_method in ['mean', 'std', 'min', 'max']:
+            _a = cons.groupby('ccx_id')[time].agg(agg_method)
+            feat = 'trade_{}_{}'.format(agg_method, time)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['ccx_id'].map(_a).fillna(999)
+            feats.append(feat)
+        return feats
+
+    def feats_stat_cons_cato(cons, b_a, b_b, b_a_test):
+        feats = []
+        for agg_method in ['mean', 'std', 'min', 'max']:
+            for feat in ['V_4', 'V_5', 'V_6', 'V_9', 'V_10', 'V_12', 'V_13']:
+                _a = cons.groupby('ccx_id')[feat].agg(agg_method)
+                feat = 'cons_{}_{}'.format(agg_method, feat)
+                for b in [b_a, b_b, b_a_test]:
+                    b[feat] = b['ccx_id'].map(_a)
+                feats.append(feat)
+        return feats
+
+    def feats_trade_cons(cons,b_a, b_b, b_a_test):
+        feats = []
+        # 近1、3、6、12、24、36个月网购交易总额
+        for m in [1, 3, 6, 12, 24, 36]:
+            _c = cons[cons.month_from_now <= m]
+            _a = _c.groupby('ccx_id')['V_6'].sum()
+            feat = 'total_pay_last_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['ccx_id'].map(_a).fillna(0)
+            feats.append(feat)
+
+        # 近1、3、6、12、24、36个月网购交易总笔数
+        for m in [1, 3, 6, 12, 24, 36]:
+            _c = cons[cons.month_from_now <= m]
+            _a = _c.groupby('ccx_id')['V_6'].count()
+            feat = 'total_pay_times_last_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['ccx_id'].map(_a).fillna(0)
+            feats.append(feat)
+
+        # 近3、6、12、24、36个月月均交易额
+        for m in [1, 3, 6, 12, 24, 36]:
+            feat = 'mean_pay_last_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['total_pay_last_{}_month'.format(m)]/m
+            feats.append(feat)
+
+        # 近3、6、12、24、36个月月均交易笔数
+        for m in [1, 3, 6, 12, 24, 36]:
+            feat = 'mean_pay_times_last_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['total_pay_times_last_{}_month'.format(m)]/m
+            feats.append(feat)
+
+        # 近1个月交易笔数比上近3、6、12、24、36个月平均交易笔数
+        for m in [3, 6, 12, 24, 36]:
+            feat = 'mean_pay_times_last_1divide_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['mean_pay_times_last_1_month'] / (0.001 + b['mean_pay_times_last_{}_month'.format(m)])
+            feats.append(feat)
+
+        # 近3个月交易笔数比上近6、12、24、36个月平均交易笔数
+        for m in [6, 12, 24, 36]:
+            feat = 'mean_pay_times_last_3divide_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['mean_pay_times_last_3_month'] / (0.001 + b['mean_pay_times_last_{}_month'.format(m)])
+            feats.append(feat)
+
+        # 近1个月交易额比上近3、6、12、24、36个月平均交易额
+        for m in [3, 6, 12, 24, 36]:
+            feat = 'mean_pay_last_1divide_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['mean_pay_last_1_month'] / (0.001 + b['mean_pay_last_{}_month'.format(m)])
+            feats.append(feat)
+
+        # 近3个月交易额比上近6、12、24、36个月平均交易额
+        for m in [6, 12, 24, 36]:
+            feat = 'mean_pay_last_3divide_{}_month'.format(m)
+            for b in [b_a, b_b, b_a_test]:
+                b['mean_pay_last_3divide_{}_month'.format(m)] = b['mean_pay_last_3_month'] / (0.001 + b['mean_pay_last_{}_month'.format(m)])
+            feats.append(feat)
+
+        for m in [1, 3, 6, 12, 24, 36]:
+            feat = 'max_pay_last_{}_month'.format(m)
+            _c = cons[cons.month_from_now <= m]
+            _a = _c.groupby('ccx_id')['V_6'].max()
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['ccx_id'].map(_a).fillna(0)
+            feats.append(feat)
+
+        for m in [1, 3, 6, 12, 24, 36]:
+            feat = 'min_pay_last_{}_month'.format(m)
+            _c = cons[cons.month_from_now <= m]
+            _a = _c.groupby('ccx_id')['V_6'].min()
+            for b in [b_a, b_b, b_a_test]:
+                b[feat] = b['ccx_id'].map(_a).fillna(0)
+            feats.append(feat)
+        return feats
+
+    def feats_counts_cons(cons, b_a, b_a_test, b_b):
+        feats = ['cons_count',]
+        for d, f in zip([cons], feats):
+            _a = d.groupby('ccx_id')['ccx_id'].count()
+            b_a[f] = b_a['ccx_id'].map(_a).fillna(0)
+            b_b[f] = b_b['ccx_id'].map(_a).fillna(0)
+            b_a_test[f] = b_a_test['ccx_id'].map(_a).fillna(0)
+        return feats
+
+    def feats_encoding_behavior_cato(b_a, b_b, b_a_test):
+        feats = []
+        for var in ['var3','var4','var5','var6','var11','var12','var13','var14','var15','var16','var17','var18']:
+            feat = var + '_float'
+            _a = b_a.groupby(var)[var].count() / (1.0 * len(b_a))
+            for b in [b_a, b_b, b_a_test]:
+                b[var] = b[var].fillna('na')
+                b[feat] = b[var].map(_a).fillna(0.0)
+            feats.append(feat)
+        return feats
+
+    def feats_encoding_mean_ccx(b_a, b_a_test):
+        feats = []
+        for var in ['var_02', 'var_03', 'var_04', 'var_05']:
+            feat = 'query_{}_float_mean'.format(var)
+            _a = ccx.groupby('ccx_id')['{}_float'.format(var)].mean()
+            b_a[feat] = b_a['ccx_id'].map(_a).fillna(0.0)
+            b_a_test[feat] = b_a_test['ccx_id'].map(_a).fillna(0.0)
+            feats.append(feat)
+        return feats
+
+    def feats_counts_ccx(ccx, b_a, b_a_test):
+        feats = ['query_count',
+                 'query_var1_c2_count',
+                 'query_var1_c3_count',
+                 'query_from_1_month_count',
+                 'query_from_3_1_month_count',
+                 'query_from_12_1_month_count',
+                 'query_var2_T1_count']
+        for d, f in zip([ccx,
+                         ccx[ccx.var_01 == 'C2'],
+                         ccx[ccx.var_01 == 'C3'],
+                         ccx[ccx.month_from_now <= 1],
+                         ccx[ccx.month_from_now <= 3],
+                         ccx[ccx.month_from_now <= 12],
+                         ccx[ccx.var_02 == 'T1']], feats):
+            _a = d.groupby('ccx_id')['ccx_id'].count()
+            b_a[f] = b_a['ccx_id'].map(_a).fillna(0)
+            b_a_test[f] = b_a_test['ccx_id'].map(_a).fillna(0)
+        return feats
+
+    # time = 'day_from_now' or 'month_from_now'
+    def feats_stat_ccx_time(ccx, b_a, b_a_test, time):
+        feats = []
+        for agg_method in ['mean', 'std', 'min', 'max']:
+            _a = ccx.groupby('ccx_id')[time].agg(agg_method)
+            feat = 'query_{}_{}'.format(agg_method, time)
+            for b in [b_a, b_a_test]:
+                b[feat] = b['ccx_id'].map(_a).fillna(999)
+            feats.append(feat)
+        return feats
+
+    def get_model_a(X_train, y, feats_all):
+        train_data = lgb.Dataset(X_train[feats_all], label=y, free_raw_data=True)
+        params = {
+            'boosting_type': 'gbdt',
+            'objective': 'binary',
+            'metric': 'auc',
+            'learning_rate': 0.05,
+            'valid_names': ['eval','train'],
+            'max_depth': 3,
+            'num_threads': 16,
+            'verbose': -1,
+        }
+        num_round = 100
+        return lgb.train(params, train_data, num_round)
+
+    train_consumer_A = pd.read_csv("./train/scene_A/train_consumer_A.csv")
+    train_behavior_A = pd.read_csv('./train/scene_A/train_behavior_A.csv')
+    train_ccx_A = pd.read_csv("./train/scene_A/train_ccx_A.csv")
+    train_consumer_B = pd.read_csv("./train/scene_B/train_consumer_B.csv")
+    train_behavior_B = pd.read_csv('./train/scene_B/train_behavior_B.csv')
+
+    test_consumer_A = pd.read_csv("./test/scene_A/test_consumer_A.csv")
+    test_behavior_A = pd.read_csv('./test/scene_A/test_behavior_A.csv')
+    test_ccx_A = pd.read_csv("./test/scene_A/test_ccx_A.csv")
+    test_consumer_B = pd.read_csv("./test/scene_B/test_consumer_B.csv")
+    test_behavior_B = pd.read_csv('./test/scene_B/test_behavior_B.csv')
+    # read labels
+    Y = pd.read_csv('./train/scene_A/train_target_A.csv')
+    behavior = pd.merge(train_behavior_A, Y)
+    y = behavior['target']
+    b_a = behavior
+    b_b = test_behavior_B
+    b_a_test = test_behavior_A
+    cons = pd.concat([train_consumer_A, test_consumer_A, test_consumer_B], axis=0, ignore_index=True)
+    ccx = pd.concat([train_ccx_A, test_ccx_A], axis=0, ignore_index=True)
+    preprocess_ccx_cons(ccx, cons)
+    feats1= list(feats_b_behavior(b_a, b_b, b_a_test))
+    feats2= feats_encoding_behavior_cato(b_a, b_b, b_a_test)
+    feats3= feats_stat_cons_time(cons, b_a, b_b, b_a_test, 'day_from_now')
+    feats4= feats_stat_cons_time(cons, b_a, b_b, b_a_test, 'month_from_now')
+    feats5= feats_stat_cons_cato(cons, b_a, b_b, b_a_test)
+    feats6= feats_trade_cons(cons,b_a, b_b, b_a_test)
+    feats7= feats_counts_cons(cons, b_a, b_a_test, b_b)
+
+    feats8= feats_encoding_mean_ccx(b_a, b_a_test)
+    feats9= feats_counts_ccx(ccx, b_a, b_a_test)
+    feats10= feats_stat_ccx_time(ccx, b_a, b_a_test, 'day_from_now')
+    feats11= feats_stat_ccx_time(ccx, b_a, b_a_test, 'month_from_now')
+
+    feats_b = feats1 + feats2 + feats3+ feats4+ feats5+ feats6+ feats7 + ['ccx_id']
+    feats_a = feats_b + feats8 + feats9 + feats10 + feats11
+
+    feats_all_b = list(set(feats_b) - set(['target']))
+    feats_all_a = list(set(feats_a) - set(['target']))
+    clf = get_model_a(b_a, y, feats_all_a)
+    pred = clf.predict(b_a_test[feats_all_a].values)
+    return pred
+
+
 # Genrate Results
 def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B,use_B=False):
-    if use_B == False:
-        # read behaivor
-        train_A_index = len(train_behavior_A)
-        test_A_index = len(test_behavior_A)
+    # if use_B == False:
+    # without B data
+    # read behaivor
+    train_A_index = len(train_behavior_A)
+    test_A_index = len(test_behavior_A)
 
-        behavior_info = pd.concat([train_behavior_A,test_behavior_A,test_behavior_B])
-        basic_info = GetBehavior(behavior_info)
-        # read consuming
-        consuming_info = pd.concat([train_consumer_A,test_consumer_A,test_consumer_B])
-        consuming_info = GetConsuming(consuming_info)
+    behavior_info = pd.concat([train_behavior_A,test_behavior_A,test_behavior_B])
+    basic_info = GetBehavior(behavior_info)
+    # read consuming
+    consuming_info = pd.concat([train_consumer_A,test_consumer_A,test_consumer_B])
+    consuming_info = GetConsuming(consuming_info)
 
-        # read ccx_A
-        ccx_A = pd.concat([train_ccx_A,test_ccx_A])
-        uids = basic_info['ccx_id'].unique()
-        query_info = GetQueryFeatures(ccx_A,uids)
+    # read ccx_A
+    ccx_A = pd.concat([train_ccx_A,test_ccx_A])
+    uids = basic_info['ccx_id'].unique()
+    query_info = GetQueryFeatures(ccx_A,uids)
 
-        info = pd.merge(basic_info,consuming_info,how='left')
-        info = pd.merge(info,query_info,how='left')
-        info = pd.merge(info,Y,how="outer")
-        label = info.iloc[:train_A_index]['target']
-        features = [col for col in info.columns if col != 'target']
+    info = pd.merge(basic_info,consuming_info,how='left')
+    info = pd.merge(info,query_info,how='left')
+    info = pd.merge(info,Y,how="outer")
+    label = info.iloc[:train_A_index]['target']
+    features = [col for col in info.columns if col != 'target']
 
-        # lightgbm
-        train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
-        bst = lgb.train(params,train_data,num_boost_round=150)
+    # lightgbm
+    train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
+    bst = lgb.train(params,train_data,num_boost_round=150)
 
-        # catboost
-        # train_data = info.iloc[:train_A_index]
-        # categorical_features = np.where(train_data[features].dtypes != np.float)[0]
-        #
-        # model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
-        # model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
+    # catboost
+    # train_data = info.iloc[:train_A_index]
+    # categorical_features = np.where(train_data[features].dtypes != np.float)[0]
+    #
+    # model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
+    # model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
 
-        predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
-        predict_result_A['ccx_id'] = info.iloc[train_A_index:train_A_index+test_A_index]['ccx_id'].unique()
 
-        predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_A_index:train_A_index+test_A_index][features],False),num_iteration=bst.best_iteration)
-        # predict_result_A['prob'] = model.predict(info.iloc[train_A_index:train_A_index+test_A_index][features].fillna(-1))
+    yiming = bst.predict(PreProcess(info.iloc[train_A_index:train_A_index+test_A_index][features],False),num_iteration=bst.best_iteration)
 
-        predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
+    # predict_result_A['prob'] = model.predict(info.iloc[train_A_index:train_A_index+test_A_index][features].fillna(-1))
 
-    else:
-        train_behavior_consume,test_behavior_consume_A = LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,Y,10,test_behavior_A,test_consumer_A)
-        train_ccx = pd.concat([train_ccx_A,test_ccx_A])
-        ccx = GetQueryFeatures(train_ccx,pd.concat([train_behavior_A.ccx_id,test_behavior_A.ccx_id]))
-        train_ccx = ccx[ccx.ccx_id.isin(train_behavior_A.ccx_id)]
-        test_ccx = ccx[ccx.ccx_id.isin(test_behavior_A.ccx_id)]
+    # else:
+    # add B data
+    train_behavior_consume,test_behavior_consume_A = LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,Y,10,test_behavior_A,test_consumer_A)
+    train_ccx = pd.concat([train_ccx_A,test_ccx_A])
+    ccx = GetQueryFeatures(train_ccx,pd.concat([train_behavior_A.ccx_id,test_behavior_A.ccx_id]))
+    train_ccx = ccx[ccx.ccx_id.isin(train_behavior_A.ccx_id)]
+    test_ccx = ccx[ccx.ccx_id.isin(test_behavior_A.ccx_id)]
 
-        train_data = pd.merge(train_behavior_consume,train_ccx,how='left')
-        test_data = pd.merge(test_behavior_consume_A,test_ccx,how='left')
+    train_data = pd.merge(train_behavior_consume,train_ccx,how='left')
+    test_data = pd.merge(test_behavior_consume_A,test_ccx,how='left')
 
-        label = train_data['target']
-        features = [col for col in train_data.columns if col != 'target' and col != 'ccx_id']
+    label = train_data['target']
+    features = [col for col in train_data.columns if col != 'target']
 
-        train_data = lgb.Dataset(PreProcess(train_data[features],False),label=label)
-        bst = lgb.train(params,train_data,num_boost_round=150)
+    # set the weight
+    train_data['weight'] = 1
+    train_data.loc[train_data.ccx_id.isin(train_behavior_B.ccx_id),'weight'] = 0.5
+    weight = train_data['weight']
 
-        predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
-        predict_result_A['ccx_id'] = test_data['ccx_id'].unique()
+    train_data = lgb.Dataset(PreProcess(train_data[features],False),label=label,weight=weight)
 
-        predict_result_A['prob'] = bst.predict(PreProcess(test_data[features],False),num_iteration=bst.best_iteration)
+    bst = lgb.train(params,train_data,num_boost_round=150)
 
-        predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
+    predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
+    predict_result_A['ccx_id'] = test_data['ccx_id'].unique()
+
+    yiming_withB = bst.predict(PreProcess(test_data[features],False),num_iteration=bst.best_iteration)
+
+    # fang fei guo
+    feiguo = run_ffg()
+
+    predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
+    predict_result_A['ccx_id'] = info.iloc[train_A_index:train_A_index+test_A_index]['ccx_id'].unique()
+    predict_result_A['prob'] = 0.25 * yiming + 0.35 * yiming_withB + 0.4 * feiguo
+    predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
 
     # read behaivor
     train_A_index = len(train_behavior_A)
@@ -580,7 +839,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     info = pd.merge(info,Y,how="outer")
     features = [col for col in info.columns if col != 'target']
 
-    label = info.iloc[:train_A_index]['target']
+    # label = info.iloc[:train_A_index]['target']
     predict_result_B = pd.DataFrame(columns=['ccx_id','prob'])
     predict_result_B['ccx_id'] = info.iloc[train_A_index+test_A_index:]['ccx_id'].unique()
 
@@ -703,11 +962,11 @@ def ReadExtraTrainTestData(valid_number,use_B=False):
 # Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
 
 '''generate predict_A and predict_B'''
-# Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
+Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
 
 '''test 5 files'''
-res = ValidateByExtraData()
-print("the results of 5 cv is %.4f" % res)
+# res = ValidateByExtraData()
+# print("the results of 5 cv is %.4f" % res)
 
 
 
