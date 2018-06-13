@@ -396,12 +396,14 @@ def FormatData(data):
 # label B
 def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,target,Max_Iteration,test_behavior_A,test_consumer_A,test_behavior_B=None,test_consumer_B=None):
     # process behaivor_info
-    test_behavior = pd.concat([test_behavior_A,test_behavior_B])
+    # test_behavior = pd.concat([test_behavior_A,test_behavior_B])
+    test_behavior = test_behavior_A
     behavior_info = pd.concat([train_behavior_A,train_behavior_B,test_behavior])
     behavior_info = GetBehavior(behavior_info)
 
     # process consuming_info
-    test_consumer = pd.concat([test_consumer_A,test_consumer_B])
+    # test_consumer = pd.concat([test_consumer_A,test_consumer_B])
+    test_consumer = test_consumer_A
     consuming_info = pd.concat([train_consumer_A,train_consumer_B,test_consumer])
     consuming_info = GetConsuming(consuming_info)
 
@@ -424,8 +426,8 @@ def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,t
         # predict B
         pred = bst.predict(PreProcess(leave[features],False),num_iteration=bst.best_iteration)
         leave['predict'] = pred
-        leave.loc[leave['predict'] >= 0.7,'target'] = 1
-        leave.loc[leave['predict'] <= 0.1,'target'] = 0
+        leave.loc[leave['predict'] >= 0.6,'target'] = leave.loc[leave['predict'] >= 0.6,'predict']
+        leave.loc[leave['predict'] <= 0.4,'target'] = leave.loc[leave['predict'] <= 0.4,'predict']
         # add B(has labels) into traindata
         to_add = leave[~leave['target'].isnull()]
         leave = leave[leave['target'].isnull()]
@@ -523,21 +525,21 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
         features = [col for col in info.columns if col != 'target']
 
         # lightgbm
-        # train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
-        # bst = lgb.train(params,train_data,num_boost_round=150)
+        train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
+        bst = lgb.train(params,train_data,num_boost_round=150)
 
         # catboost
-        train_data = info.iloc[:train_A_index]
-        categorical_features = np.where(train_data[features].dtypes != np.float)[0]
-
-        model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
-        model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
+        # train_data = info.iloc[:train_A_index]
+        # categorical_features = np.where(train_data[features].dtypes != np.float)[0]
+        #
+        # model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
+        # model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
 
         predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
         predict_result_A['ccx_id'] = info.iloc[train_A_index:train_A_index+test_A_index]['ccx_id'].unique()
 
-        # predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_A_index:train_A_index+test_A_index][features],False),num_iteration=bst.best_iteration)
-        predict_result_A['prob'] = model.predict(info.iloc[train_A_index:train_A_index+test_A_index][features].fillna(-1))
+        predict_result_A['prob'] = bst.predict(PreProcess(info.iloc[train_A_index:train_A_index+test_A_index][features],False),num_iteration=bst.best_iteration)
+        # predict_result_A['prob'] = model.predict(info.iloc[train_A_index:train_A_index+test_A_index][features].fillna(-1))
 
         predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
 
@@ -605,26 +607,41 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
 # using extra train and test data
 def ValidateByExtraData():
     auc = 0
+    flag = True
     for i in range(1,6):
         # train_data,test_data = ReadExtraTrainTestData(str(i),True)
-        train_data,test_data = ReadExtraTrainTestData(str(i))
+        train_data,test_data = ReadExtraTrainTestData(str(i),flag)
         features = [col for col in train_data.columns if col != 'target']
 
         # lightgbm
-        # train_data = lgb.Dataset(PreProcess(train_data[features],False),label=train_data['target'])
-        # bst = lgb.train(params,train_data,num_boost_round=150)
-        # pred = bst.predict(PreProcess(test_data[features],False),num_iteration=bst.best_iteration)
+        # if use B, set the weight (A:1; B:0.6)
+        if flag:
+            train_data['weight'] = 1
+            train_data.loc[train_data.ccx_id.isin(train_behavior_B.ccx_id),'weight'] = 0.5
+            weight = train_data['weight']
+            train_data = lgb.Dataset(PreProcess(train_data[features],False),label=train_data['target'],weight=weight)
+        else:
+            train_data = lgb.Dataset(PreProcess(train_data[features],False),label=train_data['target'])
+        bst = lgb.train(params,train_data,num_boost_round=150)
+        pred = bst.predict(PreProcess(test_data[features],False),num_iteration=bst.best_iteration)
         # print(pred)
 
+        predict_result = pd.DataFrame(columns=['ccx_id','prob'])
+        predict_result['ccx_id'] = test_data['ccx_id'].unique()
+        predict_result['prob'] = pred
+        predict_result.to_csv('./predict_result_%d.csv' % i,encoding='utf-8',index=False)
+
         # catboost
-        categorical_features = np.where(train_data[features].dtypes != np.float)[0]
-
-        # categorical_features = np.where(train_data.dtypes != np.float)
-
-        model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
-        model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
-        pred = model.predict(test_data[features].fillna(-1))
-        auc += roc_auc_score(test_data['target'],pred)
+        # categorical_features = np.where(train_data[features].dtypes != np.float)[0]
+        #
+        # # categorical_features = np.where(train_data.dtypes != np.float)
+        #
+        # model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
+        # model.fit(train_data[features].fillna(-1),train_data['target'],cat_features=categorical_features)
+        # pred = model.predict(test_data[features].fillna(-1))
+        temp = roc_auc_score(test_data['target'],pred)
+        print("DataSet %d : %.4f" % (i,temp))
+        auc += temp
     return auc / 5
 
 # read train_data
@@ -682,13 +699,20 @@ def ReadExtraTrainTestData(valid_number,use_B=False):
         test_data = pd.merge(test_data,test_target,how='left')
     return train_data,test_data
 
-# using catboost
-
 
 # Test(train_consumer_A,train_behavior_A,train_ccx_A,train_consumer_B,train_behavior_B)
-Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
-# res = ValidateByExtraData()
-# print(res)
+
+'''generate predict_A and predict_B'''
+# Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
+
+'''test 5 files'''
+res = ValidateByExtraData()
+print("the results of 5 cv is %.4f" % res)
+
+
+
+
+
 
 #
 # def testfm():
