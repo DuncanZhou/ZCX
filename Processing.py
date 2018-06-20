@@ -437,6 +437,8 @@ def LabelB(train_consumer_A,train_behavior_A,train_behavior_B,train_consumer_B,t
             break
     print("iteration %d times" % iteration)
     train_info = train_info.drop(['predict'],axis=1)
+    # set ccx_id of B is 0
+    train_info.loc[train_info.ccx_id.isin(train_behavior_B.ccx_id),'ccx_id'] = 0
     # read test data
     test_info_A = info[info.ccx_id.isin(test_behavior_A.ccx_id)]
     # test_info_B = info[info.ccx_id.isin(test_behavior_B.ccx_id)]
@@ -505,10 +507,10 @@ def run_ffg():
     def preprocess_ccx_cons(ccx, cons):
         cons['V_7'] = cons['V_7'].str.replace('/', '-')
         ccx['var_06'] = ccx['var_06'].str.replace('/', '-')
+        cons['year'] = cons['V_7'].apply(lambda x: int(x.split()[0].split('-')[0]))
+        cons['month'] = cons['V_7'].apply(lambda x: int(x.split()[0].split('-')[1]))
         cons['date'] = cons['V_7'].apply(lambda x: x.split()[0])
         cons['time'] = cons['V_7'].apply(lambda x: x.split()[1])
-        cons['year'] = cons['date'].apply(lambda x: int(x.split('-')[0]))
-        cons['month'] = cons['date'].apply(lambda x: int(x.split('-')[1]))
         cons['month_from_now'] = cons.apply(lambda x: (2017 - x['year']) * 12 + (6 - x['month']), axis = 1)
         cons['day_from_now'] = (pd.to_datetime('2017-06-01') - pd.to_datetime(cons['date'])).apply(lambda x:x.days)
         cons['hour'] = cons['time'].apply(lambda x: int(x.split(':')[0]))
@@ -516,6 +518,9 @@ def run_ffg():
         ccx['month'] = ccx['var_06'].apply(lambda x: int(x.split('-')[1]))
         ccx['month_from_now'] = ccx.apply(lambda x: (2017 - x['year']) * 12 + (6 - x['month']), axis = 1)
         ccx['day_from_now'] = (pd.to_datetime('2017-06-01') - pd.to_datetime(ccx['var_06'])).apply(lambda x:x.days)
+        for cons_var in ['V_1', 'V_2', 'V_3', 'V_8', 'V_14']:
+            _a = cons.groupby(cons_var)[cons_var].count() / (1.0 * len(cons))
+            cons[cons_var + '_float'] = cons[cons_var].map(_a).fillna(0.0)
         for ccx_var in ['var_02', 'var_03', 'var_04', 'var_05']:
             _a = ccx.groupby(ccx_var)[ccx_var].count() / (1.0 * len(ccx))
             ccx[ccx_var + '_float'] = ccx[ccx_var].map(_a).fillna(0.0)
@@ -527,16 +532,17 @@ def run_ffg():
                 b[feat] = b[feat].fillna(0)
         return feats
 
-    # time = 'day_from_now' or 'month_from_now'
+        # time = 'day_from_now' or 'month_from_now'
     def feats_stat_cons_time(cons, b_a, b_b, b_a_test, time):
         feats = []
         for agg_method in ['mean', 'std', 'min', 'max']:
             _a = cons.groupby('ccx_id')[time].agg(agg_method)
             feat = 'trade_{}_{}'.format(agg_method, time)
             for b in [b_a, b_b, b_a_test]:
-                b[feat] = b['ccx_id'].map(_a).fillna(999)
+                b[feat] = b['ccx_id'].map(_a).fillna(9999)
             feats.append(feat)
         return feats
+
 
     def feats_stat_cons_cato(cons, b_a, b_b, b_a_test):
         feats = []
@@ -628,15 +634,6 @@ def run_ffg():
             feats.append(feat)
         return feats
 
-    def feats_counts_cons(cons, b_a, b_a_test, b_b):
-        feats = ['cons_count',]
-        for d, f in zip([cons], feats):
-            _a = d.groupby('ccx_id')['ccx_id'].count()
-            b_a[f] = b_a['ccx_id'].map(_a).fillna(0)
-            b_b[f] = b_b['ccx_id'].map(_a).fillna(0)
-            b_a_test[f] = b_a_test['ccx_id'].map(_a).fillna(0)
-        return feats
-
     def feats_encoding_behavior_cato(b_a, b_b, b_a_test):
         feats = []
         for var in ['var3','var4','var5','var6','var11','var12','var13','var14','var15','var16','var17','var18']:
@@ -648,7 +645,18 @@ def run_ffg():
             feats.append(feat)
         return feats
 
-    def feats_encoding_mean_ccx(b_a, b_a_test):
+    def feats_encoding_mean_cons(cons,b_a,b_b,b_a_test):
+        feats = []
+        for var in ['V_1', 'V_2', 'V_3', 'V_8', 'V_14']:
+            feat = 'trade_{}_float_mean'.format(var)
+            _a = cons.groupby('ccx_id')['{}_float'.format(var)].mean()
+            b_a[feat] = b_a['ccx_id'].map(_a).fillna(0.0)
+            b_b[feat] = b_b['ccx_id'].map(_a).fillna(0.0)
+            b_a_test[feat] = b_a_test['ccx_id'].map(_a).fillna(0.0)
+            feats.append(feat)
+        return feats
+
+    def feats_encoding_mean_ccx(ccx, b_a, b_a_test):
         feats = []
         for var in ['var_02', 'var_03', 'var_04', 'var_05']:
             feat = 'query_{}_float_mean'.format(var)
@@ -659,33 +667,77 @@ def run_ffg():
         return feats
 
     def feats_counts_ccx(ccx, b_a, b_a_test):
-        feats = ['query_count',
-                 'query_var1_c2_count',
-                 'query_var1_c3_count',
-                 'query_from_1_month_count',
-                 'query_from_3_1_month_count',
-                 'query_from_12_1_month_count',
-                 'query_var2_T1_count']
-        for d, f in zip([ccx,
-                         ccx[ccx.var_01 == 'C2'],
-                         ccx[ccx.var_01 == 'C3'],
-                         ccx[ccx.month_from_now <= 1],
-                         ccx[ccx.month_from_now <= 3],
-                         ccx[ccx.month_from_now <= 12],
-                         ccx[ccx.var_02 == 'T1']], feats):
+        feats = [
+            'query_var1_c2_count',
+            'query_var1_c3_count',
+            'query_var2_T1_count'
+        ]
+        for d, f in zip([
+            ccx[ccx.var_01 == 'C2'],
+            ccx[ccx.var_01 == 'C3'],
+            ccx[ccx.var_02 == 'T1']
+        ], feats):
             _a = d.groupby('ccx_id')['ccx_id'].count()
             b_a[f] = b_a['ccx_id'].map(_a).fillna(0)
             b_a_test[f] = b_a_test['ccx_id'].map(_a).fillna(0)
         return feats
 
-    # time = 'day_from_now' or 'month_from_now'
+    def feats_counts_cons(cons, b_a,b_b, b_a_test):
+        feats = [
+            'trade_var2_c60_count',
+            'trade_var2_c31_count',
+            'trade_var3_a4_count',
+            'trade_var8_pl1_count',
+        ]
+        for d, f in zip([cons[cons.V_2 == 'C60'], cons[cons.V_2 == 'C31'], cons[cons.V_3 == 'a4'], cons[cons.V_3 == 'R0'], cons[cons.V_8 == 'PL1']], feats):
+            _a = d.groupby('ccx_id')['ccx_id'].count()
+            b_a[f] = b_a['ccx_id'].map(_a).fillna(0)
+            b_b[f] = b_b['ccx_id'].map(_a).fillna(0)
+            b_a_test[f] = b_a_test['ccx_id'].map(_a).fillna(0)
+        return feats
+
+        # time = 'day_from_now' or 'month_from_now'
     def feats_stat_ccx_time(ccx, b_a, b_a_test, time):
         feats = []
         for agg_method in ['mean', 'std', 'min', 'max']:
             _a = ccx.groupby('ccx_id')[time].agg(agg_method)
             feat = 'query_{}_{}'.format(agg_method, time)
             for b in [b_a, b_a_test]:
-                b[feat] = b['ccx_id'].map(_a).fillna(999)
+                b[feat] = b['ccx_id'].map(_a).fillna(9999)
+            feats.append(feat)
+        return feats
+
+    def feats_query_cons(ccx, b_a, b_a_test):
+        feats = []
+
+        # 近1、3、6、12、24、36个月网购交易总笔数
+        for m in [1, 3, 6, 12, 24, 36]:
+            _c = ccx[ccx.month_from_now <= m]
+            _a = _c.groupby('ccx_id')['var_01'].count()
+            feat = 'total_query_times_last_{}_month'.format(m)
+            for b in [b_a, b_a_test]:
+                b[feat] = b['ccx_id'].map(_a).fillna(0)
+            feats.append(feat)
+
+        # 近3、6、12、24、36个月月均交易笔数
+        for m in [1, 3, 6, 12, 24, 36]:
+            feat = 'mean_query_times_last_{}_month'.format(m)
+            for b in [b_a, b_a_test]:
+                b[feat] = b['total_query_times_last_{}_month'.format(m)]/m
+            feats.append(feat)
+
+        # 近1个月交易笔数比上近3、6、12、24、36个月平均交易笔数
+        for m in [3, 6, 12, 24, 36]:
+            feat = 'mean_query_times_last_1divide_{}_month'.format(m)
+            for b in [b_a, b_a_test]:
+                b[feat] = b['mean_query_times_last_1_month'] / (0.001 + b['mean_query_times_last_{}_month'.format(m)])
+            feats.append(feat)
+
+        # 近3个月交易笔数比上近6、12、24、36个月平均交易笔数
+        for m in [6, 12, 24, 36]:
+            feat = 'mean_query_times_last_3divide_{}_month'.format(m)
+            for b in [b_a, b_a_test]:
+                b[feat] = b['mean_query_times_last_3_month'] / (0.001 + b['mean_query_times_last_{}_month'.format(m)])
             feats.append(feat)
         return feats
 
@@ -696,10 +748,9 @@ def run_ffg():
             'objective': 'binary',
             'metric': 'auc',
             'learning_rate': 0.05,
-            'valid_names': ['eval','train'],
-            'max_depth': 3,
             'num_threads': 16,
             'verbose': -1,
+            'num_leaves': 8,
         }
         num_round = 100
         return lgb.train(params, train_data, num_round)
@@ -715,8 +766,8 @@ def run_ffg():
     test_ccx_A = pd.read_csv("./test/scene_A/test_ccx_A.csv")
     test_consumer_B = pd.read_csv("./test/scene_B/test_consumer_B.csv")
     test_behavior_B = pd.read_csv('./test/scene_B/test_behavior_B.csv')
-    # read labels
     Y = pd.read_csv('./train/scene_A/train_target_A.csv')
+
     behavior = pd.merge(train_behavior_A, Y)
     y = behavior['target']
     b_a = behavior
@@ -725,22 +776,21 @@ def run_ffg():
     cons = pd.concat([train_consumer_A, test_consumer_A, test_consumer_B], axis=0, ignore_index=True)
     ccx = pd.concat([train_ccx_A, test_ccx_A], axis=0, ignore_index=True)
     preprocess_ccx_cons(ccx, cons)
-    feats1= list(feats_b_behavior(b_a, b_b, b_a_test))
-    feats2= feats_encoding_behavior_cato(b_a, b_b, b_a_test)
-    feats3= feats_stat_cons_time(cons, b_a, b_b, b_a_test, 'day_from_now')
-    feats4= feats_stat_cons_time(cons, b_a, b_b, b_a_test, 'month_from_now')
-    feats5= feats_stat_cons_cato(cons, b_a, b_b, b_a_test)
-    feats6= feats_trade_cons(cons,b_a, b_b, b_a_test)
-    feats7= feats_counts_cons(cons, b_a, b_a_test, b_b)
-
-    feats8= feats_encoding_mean_ccx(b_a, b_a_test)
+    feats1 = list(feats_b_behavior(b_a, b_b, b_a_test))
+    feats2 = feats_encoding_behavior_cato(b_a, b_b, b_a_test)
+    feats3 = feats_stat_cons_time(cons, b_a, b_b, b_a_test, 'day_from_now')
+    feats4 = feats_stat_cons_time(cons, b_a, b_b, b_a_test, 'month_from_now')
+    feats5 = feats_stat_cons_cato(cons, b_a, b_b, b_a_test)
+    feats6 = feats_trade_cons(cons,b_a, b_b, b_a_test)
+    feats7 = feats_counts_cons(cons, b_a, b_a_test, b_b)
+    feats14 = feats_encoding_mean_cons(cons,b_a,b_b,b_a_test)
+    feats8= feats_encoding_mean_ccx(ccx, b_a, b_a_test)
     feats9= feats_counts_ccx(ccx, b_a, b_a_test)
     feats10= feats_stat_ccx_time(ccx, b_a, b_a_test, 'day_from_now')
     feats11= feats_stat_ccx_time(ccx, b_a, b_a_test, 'month_from_now')
-
-    feats_b = feats1 + feats2 + feats3+ feats4+ feats5+ feats6+ feats7 + ['ccx_id']
-    feats_a = feats_b + feats8 + feats9 + feats10 + feats11
-
+    feats12 = feats_query_cons(ccx, b_a, b_a_test)
+    feats_b = feats1 + feats2 + feats3+ feats4+ feats5 + feats6+ feats7 + ['ccx_id', 'var1', 'var2', 'var7', 'var8', 'var9']
+    feats_a = feats_b + feats8 + feats9 + feats10 + feats11 + feats12 + feats14
     feats_all_b = list(set(feats_b) - set(['target']))
     feats_all_a = list(set(feats_a) - set(['target']))
     clf = get_model_a(b_a, y, feats_all_a)
@@ -772,7 +822,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     info = pd.merge(info,Y,how="outer")
     label = info.iloc[:train_A_index]['target']
     features = [col for col in info.columns if col != 'target']
-
+    print("without B data %d features" % len(features))
     # lightgbm
     train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features],False),label=label)
     bst = lgb.train(params,train_data,num_boost_round=150)
@@ -802,7 +852,7 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
 
     label = train_data['target']
     features = [col for col in train_data.columns if col != 'target']
-
+    print("with B data %d features" % len(features))
     # set the weight
     train_data['weight'] = 1
     train_data.loc[train_data.ccx_id.isin(train_behavior_B.ccx_id),'weight'] = 0.5
@@ -822,9 +872,12 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
 
     predict_result_A = pd.DataFrame(columns=['ccx_id','prob'])
     predict_result_A['ccx_id'] = info.iloc[train_A_index:train_A_index+test_A_index]['ccx_id'].unique()
-    predict_result_A['prob'] = 0.25 * yiming + 0.35 * yiming_withB + 0.4 * feiguo
+    predict_result_A['prob'] = 0.2 * yiming + 0.3 * yiming_withB + 0.5 * feiguo
     predict_result_A.to_csv('./predict_result_A.csv',encoding='utf-8',index=False)
 
+    PredictB()
+
+def PredictB():
     # read behaivor
     train_A_index = len(train_behavior_A)
     test_A_index = len(test_behavior_A)
@@ -846,20 +899,20 @@ def Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior
     # lightgbm
     # retrain
     # param = {'num_leaves':31, 'objective':'binary','metric':'auc','boosting_type': 'gbdt'}
-    # features_B = [col for col in features if col != 'ccx_id' and col not in ccx_features]
+    features_B = [col for col in features if col != 'ccx_id']
+    print(len(features_B))
     # train_data = lgb.Dataset(PreProcess(info.iloc[:train_A_index][features_B],False),label=label)
     # bst = lgb.train(param,train_data,num_boost_round=50)
 
 
     # catboost
-    features_B = [col for col in features if col != 'ccx_id']
+    # features_B = [col for col in features if col != 'ccx_id']
     train_data = info.iloc[:train_A_index]
     categorical_features = np.where(train_data[features_B].dtypes != np.float)[0]
 
-    model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE')
+    model=CatBoostRegressor(iterations=150, depth=3, learning_rate=0.1, loss_function='RMSE',random_seed=2018)
     model.fit(train_data[features_B].fillna(-1),train_data['target'],cat_features=categorical_features)
 
-    # predict_result_B['prob'] = bst.predict(PreProcess(info.iloc[train_A_index+test_A_index:][features_B],False))
     predict_result_B['prob'] = model.predict(info.iloc[train_A_index+test_A_index:][features_B].fillna(-1))
     predict_result_B.to_csv('./predict_result_B.csv',encoding='utf-8',index=False)
 
@@ -963,7 +1016,7 @@ def ReadExtraTrainTestData(valid_number,use_B=False):
 
 '''generate predict_A and predict_B'''
 Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
-
+# PredictB()
 '''test 5 files'''
 # res = ValidateByExtraData()
 # print("the results of 5 cv is %.4f" % res)
@@ -992,3 +1045,4 @@ Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
 #     fm.predict(v.transform({"user": "1", "item": "10", "age": 24}))
 #
 # testfm()
+
