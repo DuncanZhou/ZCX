@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 #!/usr/bin/python
 #-*-coding:utf-8-*-
 '''@author:duncan'''
@@ -1046,3 +1047,6 @@ Run(test_consumer_A,test_behavior_A,test_ccx_A,test_consumer_B,test_behavior_B)
 #
 # testfm()
 
+=======
+# 比赛之后公开代码
+>>>>>>> 7ed302c4cc7e70ee1cb541a6ea6a23fa7e81d76d
